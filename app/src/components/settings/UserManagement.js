@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { auth, db } from '../../firebase';
+import { applyOwnerImpersonation } from '../../utils/impersonation';
 import { collection, onSnapshot, addDoc, doc, updateDoc, serverTimestamp, query, where } from "firebase/firestore";
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { v4 as uuidv4 } from 'uuid';
@@ -86,11 +87,11 @@ export default function UserManagement({ tenantId: propTenantId }) {
         const uid = user.uid;
         const unsubProfile = onSnapshot(doc(db, "users", uid), (docSnap) => {
           if (docSnap.exists()) {
-            const userData = {
+            const userData = applyOwnerImpersonation({
               uid,
               email: user.email,
               ...docSnap.data(),
-            };
+            });
             setLoggedInUser(userData);
             
             if (!propTenantId && userData.tenantId) {

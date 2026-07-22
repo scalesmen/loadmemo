@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { db, auth } from '../firebase';
+import { applyOwnerImpersonation } from '../utils/impersonation';
 import { collection, query, where, onSnapshot, doc, getDocs, getDoc, orderBy, limit } from "firebase/firestore";import { onAuthStateChanged } from 'firebase/auth';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
@@ -723,7 +724,7 @@ export default function DashboardPage() {
         const userDocRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            setLoggedInUser({ uid: user.uid, email: user.email, ...docSnap.data() });
+            setLoggedInUser(applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() }));
           } else {
             setLoggedInUser({ uid: user.uid, email: user.email, role: null });
           }

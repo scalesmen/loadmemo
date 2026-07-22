@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { db, auth } from "../firebase";
+import { applyOwnerImpersonation } from '../utils/impersonation';
 import {
   collection,
   query,
@@ -141,7 +142,7 @@ export default function BrokersPage() {
         const userDocRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            setLoggedInUser({ uid: user.uid, ...docSnap.data() });
+            setLoggedInUser(applyOwnerImpersonation({ uid: user.uid, ...docSnap.data() }, user.email));
           } else {
             setLoggedInUser({ uid: user.uid, role: null, roles: [] });
             console.warn("BrokersPage: Logged in user profile not found in Firestore.");

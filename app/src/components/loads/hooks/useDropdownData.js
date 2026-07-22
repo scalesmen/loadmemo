@@ -25,6 +25,7 @@ export const useDropdownData = (loggedInUser) => {
   const [trucks, setTrucks] = useState([]);
   const [dispatchers, setDispatchers] = useState([]);
   const [brokers, setBrokers] = useState([]);
+  const [companies, setCompanies] = useState([]);
   const [commodityTypes, setCommodityTypes] = useState([]);
   const [isLoadingDropdowns, setIsLoadingDropdowns] = useState(true);
   
@@ -96,10 +97,11 @@ export const useDropdownData = (loggedInUser) => {
     
     if (!loggedInUser || !loggedInUser.uid || !currentTenantId) {
       console.log("Dropdown Fetch Effect: No loggedInUser or tenantId, skipping dropdown data fetch.");
-      setDrivers([]); 
-      setTrucks([]); 
-      setDispatchers([]); 
+      setDrivers([]);
+      setTrucks([]);
+      setDispatchers([]);
       setBrokers([]);
+      setCompanies([]);
       setIsLoadingDropdowns(false);
       return;
     }
@@ -296,7 +298,25 @@ export const useDropdownData = (loggedInUser) => {
       (err) => console.error("Error fetching brokers:", err)
     );
     unsubscribeFunctions.push(unsubBrokers);
-    
+
+    // ============================================================================
+    // FETCH COMPANIES (Company Management sub-divisions — used by Carrier dropdown)
+    // Real-time listener, loaded once per page visit instead of re-fetched every
+    // time the Add Load modal opens — avoids the slow one-off query that was
+    // getting starved behind the many other listeners already open on this page.
+    // ============================================================================
+    const unsubCompanies = onSnapshot(
+      query(
+        collection(db, "companies"),
+        where("tenantId", "==", currentTenantId)
+      ),
+      (snap) => {
+        setCompanies(snap.docs.map(c => ({ id: c.id, ...c.data() })));
+      },
+      (err) => console.error("Error fetching companies:", err)
+    );
+    unsubscribeFunctions.push(unsubCompanies);
+
     // ============================================================================
     // FETCH TENANT SETTINGS (commodity types — shared across companies)
     // ============================================================================
@@ -368,6 +388,7 @@ export const useDropdownData = (loggedInUser) => {
     trucks,
     dispatchers,
     brokers,
+    companies,
     commodityTypes,
     isAutomobileHauling,
     isDryVan,

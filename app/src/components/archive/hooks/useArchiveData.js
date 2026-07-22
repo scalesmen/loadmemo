@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
 import { auth, db } from '../../../firebase';
+import { applyOwnerImpersonation } from '../../../utils/impersonation';
 import { 
   fetchArchivedLoads, 
   restoreLoad, 
@@ -51,7 +52,7 @@ export function useArchiveData() {
         const userDocRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            const userData = { uid: user.uid, email: user.email, ...docSnap.data() };
+            const userData = applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() });
             setLoggedInUser(userData);
             const userRole = userData.role;
             setHasAccess(CAN_ACCESS_ARCHIVE_ROLES.includes(userRole));

@@ -5,6 +5,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { db, auth } from '../../firebase';
+import { applyOwnerImpersonation } from '../../utils/impersonation';
 import {
   collection, query, where, onSnapshot, doc, addDoc, updateDoc,
   serverTimestamp, getDocs, writeBatch
@@ -370,7 +371,7 @@ export default function CompanyManagement() {
       if (user) {
         const unsubProfile = onSnapshot(doc(db, 'users', user.uid), (docSnap) => {
           if (docSnap.exists()) {
-            setLoggedInUser({ uid: user.uid, email: user.email, ...docSnap.data() });
+            setLoggedInUser(applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() }));
           } else {
             setLoggedInUser({ uid: user.uid, email: user.email, role: [] });
           }

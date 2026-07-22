@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../../firebase';
+import { applyOwnerImpersonation } from '../../utils/impersonation';
 import { 
   doc, 
   getDoc, 
@@ -53,7 +54,7 @@ export default function PayRulesPage() {
         setUser(currentUser);
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
         if (userDoc.exists()) {
-          const profile = userDoc.data();
+          const profile = applyOwnerImpersonation(userDoc.data(), currentUser.email);
           setUserProfile(profile);
           
           // Check if user can edit (only Super Admin and Admin)

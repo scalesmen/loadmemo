@@ -1,6 +1,7 @@
 // src/components/CurrentLoadsPage.js
 import React, { useEffect, useState, useCallback, useMemo, lazy, Suspense } from 'react';
 import { auth, db } from '../firebase';
+import { applyOwnerImpersonation } from '../utils/impersonation';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from "firebase/firestore";
 
@@ -176,6 +177,7 @@ export default function CurrentLoadsPage() {
     trucks,
     dispatchers,
     brokers,
+    companies: tenantCompanies,
     commodityTypes,
     isAutomobileHauling,
     isDryVan,
@@ -327,7 +329,7 @@ export default function CurrentLoadsPage() {
         try {
           const docSnap = await getDoc(userDocRef);
           if (docSnap.exists()) {
-            const userProfile = { uid: user.uid, email: user.email, ...docSnap.data() };
+            const userProfile = applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() });
             console.log("Auth Effect: Profile fetched:", userProfile);
             setLoggedInUser(userProfile);
             if (userProfile.active === false) {
@@ -741,6 +743,8 @@ export default function CurrentLoadsPage() {
             trucks={activeTrucks}
             dispatchers={dispatchers}
             loggedInUser={loggedInUser}
+            tenantCompanies={tenantCompanies}
+            isLoadingCompanies={isLoadingDropdowns}
             isAutomobileHauling={isAutomobileHauling}
             isDryVan={isDryVan}
             isReefer={isReefer}

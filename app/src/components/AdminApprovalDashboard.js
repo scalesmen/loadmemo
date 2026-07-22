@@ -4,6 +4,7 @@ import { collection, query, onSnapshot, orderBy, updateDoc, doc, serverTimestamp
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { onAuthStateChanged } from 'firebase/auth';
 import { ref, deleteObject, listAll, getMetadata } from 'firebase/storage';
+import TenantSwitcher from './admin/TenantSwitcher';
 
 const AdminApprovalDashboard = () => {
   const [pendingRegistrations, setPendingRegistrations] = useState([]);
@@ -1126,6 +1127,18 @@ if (!userSnapshot.empty) {
               🗑️ Document Cleanup
             </span>
           </button>
+          <button
+            onClick={() => { setActiveSection('viewTenant'); }}
+            className={`px-6 py-3 rounded-lg font-medium transition-all ${
+              activeSection === 'viewTenant'
+                ? 'bg-amber-600 text-white shadow-md'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              🔁 View Tenant
+            </span>
+          </button>
         </div>
 
         {/* Stats Cards */}
@@ -1255,7 +1268,7 @@ if (!userSnapshot.empty) {
         )}
 
         {/* Tab Navigation */}
-        {activeSection !== 'documents' && (
+        {activeSection !== 'documents' && activeSection !== 'viewTenant' && (
           <div className="border-b border-gray-200 mb-6">
             <nav className="-mb-px flex space-x-8">
               {activeSection === 'tenants' ? (
@@ -1624,6 +1637,11 @@ if (!userSnapshot.empty) {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* View Tenant Section */}
+          {activeSection === 'viewTenant' && (
+            <TenantSwitcher />
           )}
         </div>
       </div>

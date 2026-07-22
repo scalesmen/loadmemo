@@ -1,6 +1,6 @@
 // src/App.js
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { auth, db } from "./firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -24,6 +24,10 @@ import SubscriptionWrapper from './components/SubscriptionWrapper';
 
 // Import the TimezoneProvider
 import { TimezoneProvider } from './contexts/TimezoneContext';
+
+// Owner-admin "view as tenant" support
+import { AdminViewProvider, useAdminView, OWNER_ADMIN_EMAIL } from './contexts/AdminViewContext';
+import ImpersonationBanner from './components/admin/ImpersonationBanner';
 
 // Import your page components
 import Settings from "./components/Settings";
@@ -104,6 +108,7 @@ const CarrierLayout = ({ children, profile, globalCompanyFilter, handleGlobalCom
         )}
       </aside>
       <div className="flex-1 flex flex-col overflow-hidden">
+        <ImpersonationBanner />
         <Header loggedInUser={profile} onCompanyFilterChange={handleGlobalCompanyChange} onToggleSidebar={toggleSidebar} />
         <main className="flex-1 p-1 sm:p-2 bg-gray-100 overflow-y-auto">{children}</main>
       </div>
@@ -172,7 +177,7 @@ const DealerLayout = ({ children, profile, isSidebarOpen, toggleSidebar }) => {
 const isDealer = (profile) => profile?.role === 'dealer';
 const getDefaultPath = (profile) => isDealer(profile) ? '/dealer' : '/dashboard';
 
-function App() {
+function AppContent() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [checking, setChecking] = useState(true);
@@ -180,8 +185,43 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [companies, setCompanies] = useState([]);
 
+  const { impersonatedTenant, clearImpersonation } = useAdminView();
+
   const handleGlobalCompanyChange = (companyIdentifier) => setGlobalCompanyFilter(companyIdentifier);
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
+
+  // Only the owner-admin can impersonate a tenant.
+  const isOwnerAdmin = profile?.email === OWNER_ADMIN_EMAIL;
+
+  // The profile the rest of the app actually runs on. For a regular user this IS
+  // the real profile (zero change). For the owner-admin who has selected a tenant
+  // to view, we swap in that tenant's id (and grant full in-tenant visibility) so
+  // every page — which scopes its data by loggedInUser.tenantId — shows that
+  // tenant's data automatically. Identity (email/uid) stays the owner's.
+  const effectiveProfile = useMemo(() => {
+    if (isOwnerAdmin && impersonatedTenant?.id) {
+      return {
+        ...profile,
+        tenantId: impersonatedTenant.id,
+        role: 'Super Admin',
+        roles: ['Super Admin'],
+        assignedParentCompanyIds: undefined,
+        assignedCompanyId: undefined,
+        _impersonating: true,
+        _ownerEmail: profile.email,
+        _impersonatedCompanyName: impersonatedTenant.companyName,
+      };
+    }
+    return profile;
+  }, [profile, isOwnerAdmin, impersonatedTenant]);
+
+  // Safety: if the signed-in account is not the owner-admin, never leave a stale
+  // impersonation selection active.
+  useEffect(() => {
+    if (profile && !isOwnerAdmin && impersonatedTenant) {
+      clearImpersonation();
+    }
+  }, [profile, isOwnerAdmin, impersonatedTenant, clearImpersonation]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (usr) => {
@@ -220,9 +260,9 @@ function App() {
 
   useEffect(() => {
     const loadCompanies = async () => {
-      if (!profile?.tenantId) return;
+      if (!effectiveProfile?.tenantId) return;
       try {
-        const q = query(collection(db, 'companies'), where('tenantId', '==', profile.tenantId));
+        const q = query(collection(db, 'companies'), where('tenantId', '==', effectiveProfile.tenantId));
         const querySnapshot = await getDocs(q);
         setCompanies(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       } catch (error) {
@@ -230,7 +270,7 @@ function App() {
       }
     };
     loadCompanies();
-  }, [profile]);
+  }, [effectiveProfile]);
 
   // REMOVED: The ugly alert for disabled accounts
   // Users with active:false will simply be redirected to login by protected routes
@@ -260,60 +300,60 @@ function App() {
 
           {/* DEALER ROUTES */}
           <Route path="/dealer" element={
-            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={profile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={profile} /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={effectiveProfile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={effectiveProfile} /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
           } />
           <Route path="/dealer/post" element={
-            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={profile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={profile} initialTab="post" /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={effectiveProfile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={effectiveProfile} initialTab="post" /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
           } />
           <Route path="/dealer/active" element={
-            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={profile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={profile} initialTab="active" /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={effectiveProfile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={effectiveProfile} initialTab="active" /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
           } />
           <Route path="/dealer/history" element={
-            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={profile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={profile} initialTab="history" /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={effectiveProfile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DealerDashboard loggedInUser={effectiveProfile} initialTab="history" /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
           } />
           <Route path="/dealer/settings" element={
-            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={profile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><Settings userProfile={profile} /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <DealerLayout profile={effectiveProfile} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><Settings userProfile={effectiveProfile} /></DealerLayout> : <Navigate to="/dashboard" replace />) : <Navigate to="/login" replace />
           } />
 
           {/* CARRIER ROUTES */}
           <Route path="/dashboard" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DashboardPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DashboardPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/current-loads" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><CurrentLoadsPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><CurrentLoadsPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/liveload" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><LiveLoadPage loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><LiveLoadPage loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/drivers" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DriversPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DriversPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/dispatchers" element={
-  user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DispatchersPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+  user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><DispatchersPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
 } />
           <Route path="/trucks" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><TrucksPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><TrucksPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/brokers" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><BrokersPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><BrokersPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/accounting" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><AccountingPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><AccountingPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/statements" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><StatementsPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><StatementsPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/safety" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><SafetyPage companyFilter={globalCompanyFilter} loggedInUser={profile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><SafetyPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/integrations" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><IntegrationsPage companyFilter={globalCompanyFilter} loggedInUser={profile} companies={companies} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><IntegrationsPage companyFilter={globalCompanyFilter} loggedInUser={effectiveProfile} companies={companies} /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           <Route path="/settings" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer/settings" replace /> : <CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><Settings userProfile={profile} /></CarrierLayout>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer/settings" replace /> : <CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><Settings userProfile={effectiveProfile} /></CarrierLayout>) : <Navigate to="/login" replace />
           } />
           <Route path="/admin/tenants" element={
-            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={profile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><AdminApprovalDashboard /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
+            user && profile?.active ? (isDealer(profile) ? <Navigate to="/dealer" replace /> : <SubscriptionWrapper><CarrierLayout profile={effectiveProfile} globalCompanyFilter={globalCompanyFilter} handleGlobalCompanyChange={handleGlobalCompanyChange} isSidebarOpen={isSidebarOpen} toggleSidebar={toggleSidebar}><AdminApprovalDashboard /></CarrierLayout></SubscriptionWrapper>) : <Navigate to="/login" replace />
           } />
           
           {/* Catch all */}
@@ -321,6 +361,14 @@ function App() {
         </Routes>
       </Router>
     </TimezoneProvider>
+  );
+}
+
+function App() {
+  return (
+    <AdminViewProvider>
+      <AppContent />
+    </AdminViewProvider>
   );
 }
 

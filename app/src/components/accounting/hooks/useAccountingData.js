@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
 import { auth, db } from '../../../firebase';
+import { applyOwnerImpersonation } from '../../../utils/impersonation';
 import { 
   CAN_AMEND_ACCOUNTING_ROLES, 
   CAN_HARD_DELETE_ROLES,
@@ -61,7 +62,7 @@ export function useAccountingData() {
         const userDocRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            const userData = { uid: user.uid, email: user.email, ...docSnap.data() };
+            const userData = applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() });
             setLoggedInUser(userData);
             
             setCanAmendAccounting(userHasAnyRole(userData, CAN_AMEND_ACCOUNTING_ROLES));

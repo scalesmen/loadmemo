@@ -3,6 +3,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { auth, db } from '../../firebase'; // Adjust path if needed
+import { applyOwnerImpersonation } from '../../utils/impersonation';
 import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, deleteDoc, serverTimestamp, query, where } from "firebase/firestore";
 import { updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 import { v4 as uuidv4 } from 'uuid'; // For generating unique API keys
@@ -129,7 +130,7 @@ const [grossMethodSaveMessage, setGrossMethodSaveMessage] = useState({ type: "",
         const userRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userRef, (docSnap) => {
           if (docSnap.exists()) {
-            const userData = { uid: user.uid, email: user.email, ...docSnap.data() };
+            const userData = applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() });
             setLoggedInUser(userData);
             
             // UPDATED: Set tenant ID from user data if not provided as prop

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { auth, db, functions } from '../../firebase'; // Make sure functions is imported
+import { applyOwnerImpersonation } from '../../utils/impersonation';
 import { doc, onSnapshot, collection, query, where, getDocs, Timestamp } from "firebase/firestore";
 import { loadStripe } from '@stripe/stripe-js';
 import { httpsCallable } from 'firebase/functions';
@@ -120,11 +121,11 @@ export default function SubscriptionManagement({ tenantId: propTenantId }) {
         const uid = user.uid;
         const unsubProfile = onSnapshot(doc(db, "users", uid), (docSnap) => {
           if (docSnap.exists()) {
-            const userData = {
+            const userData = applyOwnerImpersonation({
               uid,
               email: user.email,
               ...docSnap.data(),
-            };
+            });
             setLoggedInUser(userData);
             
             if (!propTenantId && userData.tenantId) {

@@ -55,6 +55,16 @@ export default function SubscriptionWrapper({ children }) {
           return;
         }
 
+        // Owner-admin (business owner) is never paywalled — they may be viewing
+        // any tenant for support, and their own account has no subscription.
+        if (user.email === 'admin@loadmemo.com') {
+          if (isMounted.current) {
+            setStatus('allowed');
+            setShowPaywall(false);
+          }
+          return;
+        }
+
         // Check cache first
         const cacheKey = `sub_${user.uid}`;
         const cached = subscriptionCache.get(cacheKey);

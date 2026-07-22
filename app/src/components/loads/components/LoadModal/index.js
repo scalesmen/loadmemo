@@ -1,5 +1,5 @@
 // src/components/loads/components/LoadModal/index.js
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import VehicleInformationSection from './VehicleInformationSection';
 import ReeferFields from './CommodityFields/ReeferFields';
 import FlatbedFields from './CommodityFields/FlatbedFields';
@@ -19,6 +19,8 @@ const LoadModal = ({
   drivers = [],
   trucks = [],
   dispatchers = [],
+  tenantCompanies: tenantCompaniesRaw = [],
+  isLoadingCompanies = false,
   loggedInUser,
   isAutomobileHauling = false,
   isDryVan = false,
@@ -174,49 +176,29 @@ const LoadModal = ({
     }
   }, [sourceType, isEditing, loadForm.sourceType, setLoadForm]);
 
-  const [canEditPaymentTerms, setCanEditPaymentTerms] = useState(true); // default true for new loads
-  const [tenantCompanies, setTenantCompanies] = useState([]);
-
   // Super Admin check (supports both legacy string and array roles)
   const userRolesList = Array.isArray(loggedInUser?.role) ? loggedInUser.role : [loggedInUser?.role].filter(Boolean);
   const isSuperAdmin = userRolesList.includes('Super Admin');
 
-  useEffect(() => {
-    const fetchPaymentPermission = async () => {
-      const tenantId = loggedInUser?.tenantId || loggedInUser?.assignedCompanyId;
-      if (!tenantId) return;
+  // Company list is prefetched once at the page level (useDropdownData) via a
+  // real-time listener — no per-open fetch here, so opening the modal is instant
+  // even on tenants with many companies.
+  const tenantCompanies = useMemo(() => {
+    return [...tenantCompaniesRaw]
+      .map(c => ({
+        id: c.id,
+        name: c.name || '',
+        parentCompanyId: c.parentCompanyId || null,
+        parentCompanyName: c.parentCompanyName || null
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [tenantCompaniesRaw]);
 
-      try {
-        const companiesQuery = query(
-          collection(db, 'companies'),
-          where('tenantId', '==', tenantId)
-        );
-        const snapshot = await getDocs(companiesQuery);
-        
-        if (!snapshot.empty) {
-          const companyData = snapshot.docs[0].data();
-          const allowedRoles = companyData?.permissions?.canEditPaymentTerms || ['Super Admin'];
-          const userRoles = Array.isArray(loggedInUser?.role) ? loggedInUser.role : [loggedInUser?.role].filter(Boolean);
-          setCanEditPaymentTerms(userRoles.some(role => allowedRoles.includes(role)));
-
-          // Full company list for the Carrier dropdown (Super Admin)
-          const companiesList = snapshot.docs
-            .map(d => ({
-              id: d.id,
-              name: d.data().name || '',
-              parentCompanyId: d.data().parentCompanyId || null,
-              parentCompanyName: d.data().parentCompanyName || null
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name));
-          setTenantCompanies(companiesList);
-        }
-      } catch (error) {
-        console.error('Error fetching payment terms permission:', error);
-      }
-    };
-
-    fetchPaymentPermission();
-  }, [loggedInUser]);
+  const canEditPaymentTerms = useMemo(() => {
+    const firstCompany = tenantCompaniesRaw[0];
+    const allowedRoles = firstCompany?.permissions?.canEditPaymentTerms || ['Super Admin'];
+    return userRolesList.some(role => allowedRoles.includes(role));
+  }, [tenantCompaniesRaw, userRolesList]);
 
 
   // Check if Driver Pay is required based on payment terms
@@ -294,34 +276,42 @@ const LoadModal = ({
 <div>
   <label className="block text-sm font-medium mb-1">Carrier</label>
   {isSuperAdmin ? (
-    <select
-      name="companyName"
-      value={
-        loadForm.companyId ||
-        tenantCompanies.find(
-          c => c.name.toLowerCase().trim() === (loadForm.companyName || '').toLowerCase().trim()
-        )?.id ||
-        ''
-      }
-      onChange={(e) => {
-        const selected = tenantCompanies.find(c => c.id === e.target.value);
-        setLoadForm(prev => ({
-          ...prev,
-          companyName: selected ? selected.name : '',
-          companyId: selected ? selected.id : null
-        }));
-      }}
-      className="block w-full px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-    >
-      <option value="">— Driver's default company —</option>
-      {tenantCompanies.map(c => (
-        <option key={c.id} value={c.id}>
-          {c.parentCompanyId
-            ? `↳ ${c.name} (subdivision${c.parentCompanyName ? ` of ${c.parentCompanyName}` : ''})`
-            : c.name}
+    <>
+      <select
+        name="companyName"
+        value={
+          loadForm.companyId ||
+          tenantCompanies.find(
+            c => c.name.toLowerCase().trim() === (loadForm.companyName || '').toLowerCase().trim()
+          )?.id ||
+          ''
+        }
+        onChange={(e) => {
+          const selected = tenantCompanies.find(c => c.id === e.target.value);
+          setLoadForm(prev => ({
+            ...prev,
+            companyName: selected ? selected.name : '',
+            companyId: selected ? selected.id : null
+          }));
+        }}
+        disabled={isLoadingCompanies}
+        className="block w-full px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+      >
+        <option value="">
+          {isLoadingCompanies ? 'Loading companies…' : '— Driver\'s default company —'}
         </option>
-      ))}
-    </select>
+        {tenantCompanies.map(c => (
+          <option key={c.id} value={c.id}>
+            {c.parentCompanyId
+              ? `↳ ${c.name} (subdivision${c.parentCompanyName ? ` of ${c.parentCompanyName}` : ''})`
+              : c.name}
+          </option>
+        ))}
+      </select>
+      {isLoadingCompanies && (
+        <p className="text-xs text-gray-400 mt-1">Loading company list…</p>
+      )}
+    </>
   ) : (
     <div className="block w-full px-3 py-2 text-sm border border-gray-200 rounded-md bg-gray-50 text-gray-600">
       {loadForm.companyName || "Driver's default company"}

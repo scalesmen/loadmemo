@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { db, auth } from '../firebase';
+import { applyOwnerImpersonation } from '../utils/impersonation';
 import {
   collection, query, onSnapshot, orderBy, doc,
   addDoc, updateDoc, serverTimestamp, where, getDocs, deleteDoc, getDoc
@@ -92,7 +93,7 @@ export default function DriversPage() {
         const userDocRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            setLoggedInUser({ uid: user.uid, ...docSnap.data() });
+            setLoggedInUser(applyOwnerImpersonation({ uid: user.uid, ...docSnap.data() }, user.email));
           } else {
             setLoggedInUser({ uid: user.uid, role: null, roles: [] });
             console.warn("DriversPage: Logged in user profile not found in Firestore.");

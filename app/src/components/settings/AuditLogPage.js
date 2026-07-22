@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { db, auth } from '../../firebase'; // Adjust path if needed
+import { applyOwnerImpersonation } from '../../utils/impersonation';
 import { collection, onSnapshot, query, orderBy, limit, doc, Timestamp, where } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 
@@ -289,7 +290,7 @@ export default function AuditLogPage({ tenantId: propTenantId }) {
         const userDocRef = doc(db, "users", user.uid);
         const unsubProfile = onSnapshot(userDocRef, (docSnap) => {
           if (docSnap.exists()) {
-            const userData = { uid: user.uid, email: user.email, ...docSnap.data() };
+            const userData = applyOwnerImpersonation({ uid: user.uid, email: user.email, ...docSnap.data() });
             setLoggedInUser(userData);
             
             // UPDATED: Set tenant ID from user data if not provided as prop
