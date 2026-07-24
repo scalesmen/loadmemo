@@ -57,6 +57,10 @@ const AssignmentModal = ({
   const [searchQuery, setSearchQuery] = useState('');
   // Map of itemId -> chosen assignedCompanyId for BOL/invoice branding
   const [bolCompanyMap, setBolCompanyMap] = useState({});
+  // Which items had their BOL dropdown explicitly changed THIS session — only
+  // these should have their profile company written on save. Everything else
+  // in bolCompanyMap is just a starting snapshot, not an intended change.
+  const [touchedBolIds, setTouchedBolIds] = useState(new Set());
 
   const showBolDropdown = itemType === 'drivers' || itemType === 'trucks';
 
@@ -64,6 +68,7 @@ const AssignmentModal = ({
     if (isOpen) {
       setSelectedIds(new Set(assignedItemIds));
       setSearchQuery('');
+      setTouchedBolIds(new Set());
       // Initialize BOL company map from existing assignedCompanyId on each item
       const initialMap = {};
       allItems.forEach(item => {
@@ -133,10 +138,11 @@ const AssignmentModal = ({
 
   const handleBolCompanyChange = (itemId, companyId) => {
     setBolCompanyMap(prev => ({ ...prev, [itemId]: companyId }));
+    setTouchedBolIds(prev => new Set(prev).add(itemId));
   };
 
   const handleSave = () => {
-    onSave(Array.from(selectedIds), bolCompanyMap);
+    onSave(Array.from(selectedIds), bolCompanyMap, Array.from(touchedBolIds));
   };
 
   const addedCount = [...selectedIds].filter(id => !assignedItemIds.includes(id)).length;
@@ -750,8 +756,11 @@ const parentCompanies = canManage
     setShowAssignmentModal(true);
   };
 
-  const handleSaveAssignment = async (selectedIds, bolCompanyMap = {}) => {
+  const handleSaveAssignment = async (selectedIds, bolCompanyMap = {}, touchedBolIds = []) => {
     if (!assignmentParentCompany || !assignmentType) return;
+
+    const touchedSet = new Set(touchedBolIds);
+    let logCounts = { added: 0, removed: 0, profileCompanyChanged: 0 };
 
     setIsSavingAssignment(true);
     try {
@@ -766,105 +775,134 @@ const parentCompanies = canManage
         const toRemove = currentlyAssigned.filter(id => !selectedIds.includes(id));
         const toUpdate = selectedIds.filter(id => currentlyAssigned.includes(id));
 
-        // Add parent company to newly selected drivers + set BOL company
+        // Being added to the group always changes dispatcher visibility. Whether
+        // it should ALSO change the driver's own profile company is a separate
+        // decision — ask once, rather than assuming yes.
+        let alsoSetProfileCompany = false;
+        if (toAdd.length > 0) {
+          alsoSetProfileCompany = window.confirm(
+            `Also update ${toAdd.length === 1 ? "this driver's" : `these ${toAdd.length} drivers'`} profile company to "${parentName}"?`
+          );
+        }
+        logCounts = {
+          added: toAdd.length,
+          removed: toRemove.length,
+          profileCompanyChanged: (alsoSetProfileCompany ? toAdd.length : 0) + toUpdate.filter(id => touchedSet.has(id)).length
+        };
+
+        // Add parent company (group membership) to newly selected drivers
         toAdd.forEach(driverId => {
-  const bolCompanyId = bolCompanyMap[driverId] || parentId;
-  const bolCompany = companies.find(c => c.id === bolCompanyId);
-  const driver = drivers.find(d => d.id === driverId);
-  
-  batch.update(doc(db, 'drivers', driverId), {
-    parentCompanyId: parentId,
-    parentCompanyName: parentName,
-    assignedCompanyId: bolCompanyId,
-    assignedCompanyName: bolCompany?.name || parentName,
-    updatedAt: serverTimestamp(),
-  });
+          const bolCompanyId = bolCompanyMap[driverId] || parentId;
+          const bolCompany = companies.find(c => c.id === bolCompanyId);
+          const driver = drivers.find(d => d.id === driverId);
 
-  // Auto-assign driver's truck to same parent company
-  if (driver?.assignedTruckId) {
-    const truckAlreadyAssigned = trucks.find(t => t.id === driver.assignedTruckId);
-    if (truckAlreadyAssigned && truckAlreadyAssigned.parentCompanyId !== parentId) {
-      batch.update(doc(db, 'trucks', driver.assignedTruckId), {
-        parentCompanyId: parentId,
-        parentCompanyName: parentName,
-        assignedCompanyId: bolCompanyId,
-        assignedCompanyName: bolCompany?.name || parentName,
-        updatedAt: serverTimestamp(),
-      });
-    }
-  }
-});
+          const driverUpdate = {
+            parentCompanyId: parentId,
+            parentCompanyName: parentName,
+            updatedAt: serverTimestamp(),
+          };
+          if (alsoSetProfileCompany) {
+            driverUpdate.assignedCompanyId = bolCompanyId;
+            driverUpdate.assignedCompanyName = bolCompany?.name || parentName;
+          }
+          batch.update(doc(db, 'drivers', driverId), driverUpdate);
 
-        // Update BOL company for already-assigned drivers (in case dropdown changed)
-        toUpdate.forEach(driverId => {
-          const bolCompanyId = bolCompanyMap[driverId];
-          if (bolCompanyId) {
-            const driver = drivers.find(d => d.id === driverId);
-            // Only update if BOL company actually changed
-            if (driver?.assignedCompanyId !== bolCompanyId) {
-              const bolCompany = companies.find(c => c.id === bolCompanyId);
-              batch.update(doc(db, 'drivers', driverId), {
-                assignedCompanyId: bolCompanyId,
-                assignedCompanyName: bolCompany?.name || parentName,
+          // Auto-assign driver's truck to same parent company (group only, same rule)
+          if (driver?.assignedTruckId) {
+            const truckAlreadyAssigned = trucks.find(t => t.id === driver.assignedTruckId);
+            if (truckAlreadyAssigned && truckAlreadyAssigned.parentCompanyId !== parentId) {
+              const truckUpdate = {
+                parentCompanyId: parentId,
+                parentCompanyName: parentName,
                 updatedAt: serverTimestamp(),
-              });
+              };
+              if (alsoSetProfileCompany) {
+                truckUpdate.assignedCompanyId = bolCompanyId;
+                truckUpdate.assignedCompanyName = bolCompany?.name || parentName;
+              }
+              batch.update(doc(db, 'trucks', driver.assignedTruckId), truckUpdate);
             }
           }
         });
 
-        // Remove parent company from unselected drivers + clear BOL company
-        toRemove.forEach(driverId => {
-  const driver = drivers.find(d => d.id === driverId);
-  
-  batch.update(doc(db, 'drivers', driverId), {
-    parentCompanyId: null,
-    parentCompanyName: null,
-    assignedCompanyId: '',
-    assignedCompanyName: '',
-    updatedAt: serverTimestamp(),
-  });
+        // Drivers already in the group: only touch their profile company if the
+        // operator explicitly changed the BOL dropdown for them THIS session —
+        // never re-apply the modal's opening snapshot just because it differs
+        // from whatever the driver's profile currently says.
+        toUpdate.forEach(driverId => {
+          if (!touchedSet.has(driverId)) return;
+          const bolCompanyId = bolCompanyMap[driverId];
+          if (bolCompanyId) {
+            const bolCompany = companies.find(c => c.id === bolCompanyId);
+            batch.update(doc(db, 'drivers', driverId), {
+              assignedCompanyId: bolCompanyId,
+              assignedCompanyName: bolCompany?.name || parentName,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        });
 
-  // Auto-unassign driver's truck too
-  if (driver?.assignedTruckId) {
-    batch.update(doc(db, 'trucks', driver.assignedTruckId), {
-      parentCompanyId: null,
-      parentCompanyName: null,
-      assignedCompanyId: '',
-      assignedCompanyName: '',
-      updatedAt: serverTimestamp(),
-    });
-  }
-});
+        // Remove from group only — leave the driver's profile company alone.
+        toRemove.forEach(driverId => {
+          const driver = drivers.find(d => d.id === driverId);
+
+          batch.update(doc(db, 'drivers', driverId), {
+            parentCompanyId: null,
+            parentCompanyName: null,
+            updatedAt: serverTimestamp(),
+          });
+
+          if (driver?.assignedTruckId) {
+            batch.update(doc(db, 'trucks', driver.assignedTruckId), {
+              parentCompanyId: null,
+              parentCompanyName: null,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        });
       } else if (assignmentType === 'trucks') {
         const currentlyAssigned = trucks.filter(t => t.parentCompanyId === parentId).map(t => t.id);
         const toAdd = selectedIds.filter(id => !currentlyAssigned.includes(id));
         const toRemove = currentlyAssigned.filter(id => !selectedIds.includes(id));
         const toUpdate = selectedIds.filter(id => currentlyAssigned.includes(id));
 
+        let alsoSetProfileCompany = false;
+        if (toAdd.length > 0) {
+          alsoSetProfileCompany = window.confirm(
+            `Also update ${toAdd.length === 1 ? "this truck's" : `these ${toAdd.length} trucks'`} profile company to "${parentName}"?`
+          );
+        }
+        logCounts = {
+          added: toAdd.length,
+          removed: toRemove.length,
+          profileCompanyChanged: (alsoSetProfileCompany ? toAdd.length : 0) + toUpdate.filter(id => touchedSet.has(id)).length
+        };
+
         toAdd.forEach(truckId => {
           const bolCompanyId = bolCompanyMap[truckId] || parentId;
           const bolCompany = companies.find(c => c.id === bolCompanyId);
-          batch.update(doc(db, 'trucks', truckId), {
+          const truckUpdate = {
             parentCompanyId: parentId,
             parentCompanyName: parentName,
-            assignedCompanyId: bolCompanyId,
-            assignedCompanyName: bolCompany?.name || parentName,
             updatedAt: serverTimestamp(),
-          });
+          };
+          if (alsoSetProfileCompany) {
+            truckUpdate.assignedCompanyId = bolCompanyId;
+            truckUpdate.assignedCompanyName = bolCompany?.name || parentName;
+          }
+          batch.update(doc(db, 'trucks', truckId), truckUpdate);
         });
 
         toUpdate.forEach(truckId => {
+          if (!touchedSet.has(truckId)) return;
           const bolCompanyId = bolCompanyMap[truckId];
           if (bolCompanyId) {
-            const truck = trucks.find(t => t.id === truckId);
-            if (truck?.assignedCompanyId !== bolCompanyId) {
-              const bolCompany = companies.find(c => c.id === bolCompanyId);
-              batch.update(doc(db, 'trucks', truckId), {
-                assignedCompanyId: bolCompanyId,
-                assignedCompanyName: bolCompany?.name || parentName,
-                updatedAt: serverTimestamp(),
-              });
-            }
+            const bolCompany = companies.find(c => c.id === bolCompanyId);
+            batch.update(doc(db, 'trucks', truckId), {
+              assignedCompanyId: bolCompanyId,
+              assignedCompanyName: bolCompany?.name || parentName,
+              updatedAt: serverTimestamp(),
+            });
           }
         });
 
@@ -872,8 +910,6 @@ const parentCompanies = canManage
           batch.update(doc(db, 'trucks', truckId), {
             parentCompanyId: null,
             parentCompanyName: null,
-            assignedCompanyId: '',
-            assignedCompanyName: '',
             updatedAt: serverTimestamp(),
           });
         });
@@ -913,6 +949,24 @@ const parentCompanies = canManage
       }
 
       await batch.commit();
+
+      if (assignmentType === 'drivers' || assignmentType === 'trucks') {
+        logAudit({
+          userId: loggedInUser.uid,
+          userEmail: loggedInUser.email,
+          action: 'GROUP_ASSIGNMENT_UPDATED',
+          targetType: assignmentType === 'drivers' ? 'driverGroup' : 'truckGroup',
+          targetId: parentId,
+          details: {
+            companyName: parentName,
+            added: logCounts.added,
+            removed: logCounts.removed,
+            profileCompanyChanged: logCounts.profileCompanyChanged
+          },
+          tenantId
+        });
+      }
+
       setShowAssignmentModal(false);
       alert('Assignments updated successfully!');
     } catch (error) {
