@@ -3,7 +3,7 @@ import { db, auth } from '../firebase';
 import { applyOwnerImpersonation } from '../utils/impersonation';
 import {
   collection, query, onSnapshot, orderBy, doc,
-  addDoc, updateDoc, serverTimestamp, where, getDocs, deleteDoc, getDoc
+  addDoc, updateDoc, serverTimestamp, where, getDocs, deleteDoc, getDoc, writeBatch
 } from "firebase/firestore";
 import { onAuthStateChanged } from 'firebase/auth';
 import { Link as RouterLink } from 'react-router-dom';
@@ -73,6 +73,11 @@ export default function DriversPage() {
   const [error, setError] = useState(null);
   const [expandedDriverId, setExpandedDriverId] = useState(null);
     const [statusFilter, setStatusFilter] = useState('All');
+
+  // Bulk company assignment
+  const [selectedDriverIds, setSelectedDriverIds] = useState(new Set());
+  const [bulkCompanyId, setBulkCompanyId] = useState('');
+  const [isBulkAssigning, setIsBulkAssigning] = useState(false);
 
 
   // Modal and Form States
@@ -231,9 +236,81 @@ export default function DriversPage() {
   const canManageDrivers = userHasAnyRole(loggedInUser, editRoles);
   const canEditDrivers = userHasAnyRole(loggedInUser, editRoles);
   const canDeleteDrivers = userHasAnyRole(loggedInUser, ["Super Admin", "Main Admin", "Admin", "HR"]);
-  const filteredDrivers = statusFilter === 'All' 
-    ? drivers 
+  const filteredDrivers = statusFilter === 'All'
+    ? drivers
     : drivers.filter(d => d.status === statusFilter);
+
+  // ============================================================================
+  // BULK COMPANY ASSIGNMENT
+  // ============================================================================
+  const toggleDriverSelection = (driverId) => {
+    setSelectedDriverIds(prev => {
+      const next = new Set(prev);
+      if (next.has(driverId)) next.delete(driverId);
+      else next.add(driverId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllFiltered = () => {
+    const allIds = filteredDrivers.map(d => d.id);
+    const allSelected = allIds.length > 0 && allIds.every(id => selectedDriverIds.has(id));
+    setSelectedDriverIds(allSelected ? new Set() : new Set(allIds));
+  };
+
+  const clearSelection = () => {
+    setSelectedDriverIds(new Set());
+    setBulkCompanyId('');
+  };
+
+  const handleBulkAssignCompany = async () => {
+    if (!canManageDrivers || selectedDriverIds.size === 0 || !bulkCompanyId) return;
+
+    const targetCompany = companies.find(c => c.id === bulkCompanyId);
+    if (!targetCompany) return;
+
+    const selectedDrivers = drivers.filter(d => selectedDriverIds.has(d.id));
+    if (!window.confirm(
+      `Assign ${selectedDrivers.length} driver(s) to "${targetCompany.name}"?\n\nThis changes their Company field only — nothing else on their profile.`
+    )) return;
+
+    setIsBulkAssigning(true);
+    try {
+      const batch = writeBatch(db);
+      selectedDrivers.forEach(driver => {
+        batch.update(doc(db, 'drivers', driver.id), {
+          assignedCompanyId: targetCompany.id,
+          assignedCompanyName: targetCompany.name,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+
+      await Promise.all(selectedDrivers.map(driver => logAudit({
+        userId: loggedInUser.uid,
+        userEmail: loggedInUser.email,
+        action: "DRIVER_UPDATED",
+        targetType: "driver",
+        targetId: driver.id,
+        details: {
+          driverName: driver.name,
+          changes: {
+            assignedCompanyId: { oldValue: driver.assignedCompanyId || '', newValue: targetCompany.id },
+            assignedCompanyName: { oldValue: driver.assignedCompanyName || '', newValue: targetCompany.name }
+          }
+        },
+        tenantId: loggedInUser.tenantId
+      })));
+
+      alert(`${selectedDrivers.length} driver(s) assigned to ${targetCompany.name}.`);
+      clearSelection();
+    } catch (error) {
+      console.error('Error bulk-assigning company:', error);
+      alert('Failed to assign company: ' + error.message);
+    } finally {
+      setIsBulkAssigning(false);
+    }
+  };
 
   const handleAddDriverClick = () => {
     if (!canManageDrivers) {
@@ -540,6 +617,39 @@ export default function DriversPage() {
         )}
       </div>
 
+      {canManageDrivers && selectedDriverIds.size > 0 && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-blue-900">{selectedDriverIds.size} driver(s) selected</span>
+          <select
+            value={bulkCompanyId}
+            onChange={(e) => setBulkCompanyId(e.target.value)}
+            disabled={isBulkAssigning}
+            className="border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:ring-blue-500 focus:border-blue-500 bg-white"
+          >
+            <option value="">Assign to company...</option>
+            {companies.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.active === false ? `${c.name} (Inactive)` : c.name}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleBulkAssignCompany}
+            disabled={!bulkCompanyId || isBulkAssigning}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-1.5 rounded-md"
+          >
+            {isBulkAssigning ? 'Applying...' : 'Apply'}
+          </button>
+          <button
+            onClick={clearSelection}
+            disabled={isBulkAssigning}
+            className="text-sm text-gray-500 hover:text-gray-700"
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {isLoading && <div className="p-6 text-center text-gray-500">Loading drivers...</div>}
       {!isLoading && error && <div className="p-6 text-center text-red-500">{error}</div>}
 
@@ -555,6 +665,16 @@ export default function DriversPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-gray-100 border-b border-gray-200">
               <tr>
+                {canManageDrivers && (
+                  <th className="px-2 py-2 text-left w-8">
+                    <input
+                      type="checkbox"
+                      checked={filteredDrivers.length > 0 && filteredDrivers.every(d => selectedDriverIds.has(d.id))}
+                      onChange={toggleSelectAllFiltered}
+                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
+                    />
+                  </th>
+                )}
                 <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-12"></th>
                 <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
                 <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:table-cell">Email</th>
@@ -571,6 +691,17 @@ export default function DriversPage() {
               {filteredDrivers.map(driver => (
                 <React.Fragment key={driver.id}>
                   <tr className="hover:bg-gray-50 transition">
+                    {canManageDrivers && (
+                      <td className="px-2 py-3 whitespace-nowrap">
+                        <input
+                          type="checkbox"
+                          checked={selectedDriverIds.has(driver.id)}
+                          onChange={() => toggleDriverSelection(driver.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
+                        />
+                      </td>
+                    )}
                     <td className="px-2 py-3 whitespace-nowrap">
                       <button onClick={() => toggleDriverDetails(driver.id)} className="text-gray-400 hover:text-blue-600 p-1">
                         <svg className={`w-5 h-5 transform transition-transform duration-200 ${expandedDriverId === driver.id ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -613,7 +744,7 @@ export default function DriversPage() {
                   </tr>
                   {expandedDriverId === driver.id && (
                     <tr className="bg-gray-50 border-t border-gray-200">
-                      <td colSpan={canEditDrivers ? 11 : 10} className="px-4 sm:px-6 py-4">
+                      <td colSpan={canEditDrivers ? 12 : 10} className="px-4 sm:px-6 py-4">
                         <div className="text-sm text-gray-700 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                           <div className="sm:col-span-2 md:col-span-3">
                             <strong>Driver ID:</strong> <span className="text-gray-900 font-bold">{driver.id}</span>
