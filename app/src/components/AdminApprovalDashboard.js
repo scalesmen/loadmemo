@@ -1,10 +1,51 @@
 import React, { useState, useEffect } from 'react';
 import { db, auth, storage } from '../firebase';
-import { collection, query, onSnapshot, orderBy, updateDoc, doc, serverTimestamp, where, addDoc, getDocs, getDoc, setDoc, arrayRemove } from 'firebase/firestore';
+import { collection, query, onSnapshot, orderBy, updateDoc, doc, serverTimestamp, where, addDoc, getDocs, getDoc, setDoc, arrayRemove, writeBatch } from 'firebase/firestore';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { onAuthStateChanged } from 'firebase/auth';
 import { ref, deleteObject, listAll, getMetadata } from 'firebase/storage';
 import TenantSwitcher from './admin/TenantSwitcher';
+import { logAudit } from '../utils/auditLog';
+
+// ============================================================================
+// ONE-TIME DATA FIX: restore drivers silently reverted by the Company
+// Management group-assignment bug on 2026-07-23 (Mainaccount tenant).
+// Driver IDs + target company pulled directly from the audit log entries the
+// customer's edits actually wrote. Safe to run more than once (idempotent) —
+// remove this block once confirmed applied.
+// ============================================================================
+const CARBON_MOTORS_RESTORE = {
+  tenantId: 'mainaccount',
+  companyId: 'cUUrWJ7IkjEaNta2JwsI',
+  companyName: 'CARBON MOTORS LLC',
+  drivers: [
+    { id: 'r8RiAaz90m4JGSOO0iK0', name: 'Misha Matsonadze' },
+    { id: 'wJ3af49tdiil9PuuoY70', name: 'John James' },
+    { id: 'AvyVOhkyBYF66WEEahY8', name: 'Christophere Espinosa' },
+    { id: '3zx14ePnnF3FlzBN05Fq', name: 'Nicholas King' },
+    { id: '50WGgpeNpnUaXqitzr3u', name: 'Henry Floyd' },
+    { id: 'MhSoJnVXpPKjwTcqvszH', name: 'Devin Walker' },
+    { id: 'LaCOAyROeCwcK91XNRjQ', name: 'Xzavier Parker' },
+    { id: 'XxGTtDund0tpNJnTjzCx', name: 'Sabina Charlton' },
+    { id: 'nVu8IfgFA6qf91nhD4t6', name: 'Gustavo Rodriguez' },
+    { id: 'J3ywpnRYZmlYyJ7aEL9i', name: 'Shawn Holschuh' },
+    { id: 'RgmdTO9rcnJ01KmHFawO', name: 'Shawn Barrow' },
+    { id: '6h2xcGZkB7nHruw8gm52', name: 'Brandon Diller' },
+    { id: 'MCFE0vYIivKscCwQwwh2', name: 'Jorge Garzia' },
+    { id: 'APji49vh8OxBMxSHbwbT', name: 'Rajab Jabbar' },
+    { id: 'ZTSJYaaTFxxwSmmYMhTF', name: 'James Carter' },
+    { id: '1755wXU45b5BGPjJsYZE', name: 'Tamaz Khakhiashvili' },
+    { id: 'k5TRbnGSrDQvR4Za5BfT', name: 'Roy Houston' },
+    { id: 'svfBGbRySRAIkXbjN945', name: 'Miguel Cervantes' },
+    { id: '20aj9KxngrByhfSaTP5S', name: 'Calixto Fortunato Ibarguen' },
+    { id: 'AB4xo8d4WWRJA3bC6nqL', name: 'Can Vedat' },
+    { id: 'LdRAjhWptAW5wJIgU4j2', name: 'Brady Christian' },
+    { id: 'mgFjXWuyLi1ox1mIMkoq', name: 'Giorgi Matsonadze' },
+    { id: 'AmmgpnZqKkGaYEsUxTSe', name: 'Dwayne Howell' },
+    { id: '4pl9SUm1l3uK1aNrIiEN', name: 'Dunbar Darion' },
+    { id: 'LLONfndTKBX7O5gISdA6', name: 'Moses Ijezie' },
+  ]
+};
 
 const AdminApprovalDashboard = () => {
   const [pendingRegistrations, setPendingRegistrations] = useState([]);
@@ -25,7 +66,11 @@ const AdminApprovalDashboard = () => {
   const [isDeletingDocuments, setIsDeletingDocuments] = useState(false);
   const [documentStats, setDocumentStats] = useState({ total: 0, dispatch: 0, gatePass: 0, totalSize: 0 });
   const [minAgeDays, setMinAgeDays] = useState(45);
-  
+
+  // One-time data fix states
+  const [isRestoringDrivers, setIsRestoringDrivers] = useState(false);
+  const [restoreResult, setRestoreResult] = useState(null); // { succeeded: [], failed: [] } | null
+
   const [activeTab, setActiveTab] = useState('pending');
   const [activeSection, setActiveSection] = useState('tenants'); // 'tenants', 'insurance', or 'documents'
   const [isLoading, setIsLoading] = useState(true);
@@ -349,7 +394,62 @@ const AdminApprovalDashboard = () => {
   
   // Refresh the document list
   await scanForOldDocuments();
-};  
+};
+
+  // ============================================================================
+  // ONE-TIME DATA FIX HANDLER
+  // ============================================================================
+  const handleRestoreCarbonMotorsAssignments = async () => {
+    if (!user || user.email !== 'admin@loadmemo.com') return;
+
+    const { drivers: driverList, companyId, companyName, tenantId } = CARBON_MOTORS_RESTORE;
+    const confirmed = window.confirm(
+      `Restore ${driverList.length} driver(s) to "${companyName}"?\n\n` +
+      `This will set assignedCompanyId/assignedCompanyName on each driver listed below, matching what was recorded in the audit log on 2026-07-23. No other fields are touched.`
+    );
+    if (!confirmed) return;
+
+    setIsRestoringDrivers(true);
+    setRestoreResult(null);
+    const succeeded = [];
+    const failed = [];
+
+    try {
+      const batch = writeBatch(db);
+      driverList.forEach(d => {
+        batch.update(doc(db, 'drivers', d.id), {
+          assignedCompanyId: companyId,
+          assignedCompanyName: companyName,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      driverList.forEach(d => succeeded.push(d.name));
+
+      await logAudit({
+        userId: user.uid,
+        userEmail: user.email,
+        action: 'BULK_DRIVER_COMPANY_RESTORE',
+        targetType: 'driver',
+        targetId: 'bulk_restore',
+        details: {
+          companyName,
+          companyId,
+          driverCount: driverList.length,
+          driverNames: driverList.map(d => d.name),
+          reason: 'Restoring drivers silently reverted by Company Management group-assignment bug on 2026-07-23'
+        },
+        tenantId
+      });
+    } catch (error) {
+      console.error('Error restoring driver company assignments:', error);
+      driverList.forEach(d => failed.push(d.name));
+    }
+
+    setRestoreResult({ succeeded, failed });
+    setIsRestoringDrivers(false);
+  };
+
   const formatFileSize = (bytes) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -1139,6 +1239,18 @@ if (!userSnapshot.empty) {
               🔁 View Tenant
             </span>
           </button>
+          <button
+            onClick={() => { setActiveSection('dataFix'); }}
+            className={`px-6 py-3 rounded-lg font-medium transition-all ${
+              activeSection === 'dataFix'
+                ? 'bg-red-600 text-white shadow-md'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              🔧 Data Fix
+            </span>
+          </button>
         </div>
 
         {/* Stats Cards */}
@@ -1642,6 +1754,58 @@ if (!userSnapshot.empty) {
           {/* View Tenant Section */}
           {activeSection === 'viewTenant' && (
             <TenantSwitcher />
+          )}
+
+          {activeSection === 'dataFix' && (
+            <div className="bg-white rounded-xl border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                🔧 Restore: Carbon Motors LLC assignments (Mainaccount, 2026-07-23)
+              </h3>
+              <p className="text-sm text-gray-600 mb-4">
+                On 2026-07-23, a bug in Company Management's group-assignment tool silently reverted these
+                {' '}{CARBON_MOTORS_RESTORE.drivers.length} drivers back to their old company after the customer had
+                correctly reassigned them to <strong>{CARBON_MOTORS_RESTORE.companyName}</strong>. This restores
+                exactly what the audit log shows was saved — no other driver fields are touched. Safe to click more
+                than once.
+              </p>
+
+              <div className="mb-4 max-h-64 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-100">
+                {CARBON_MOTORS_RESTORE.drivers.map(d => (
+                  <div key={d.id} className="px-3 py-1.5 text-sm text-gray-700 flex justify-between">
+                    <span>{d.name}</span>
+                    {restoreResult && (
+                      restoreResult.succeeded.includes(d.name)
+                        ? <span className="text-green-600 text-xs">✅ Restored</span>
+                        : restoreResult.failed.includes(d.name)
+                          ? <span className="text-red-600 text-xs">❌ Failed</span>
+                          : null
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={handleRestoreCarbonMotorsAssignments}
+                disabled={isRestoringDrivers}
+                className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+                  isRestoringDrivers
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+                }`}
+              >
+                {isRestoringDrivers
+                  ? 'Restoring...'
+                  : `Restore ${CARBON_MOTORS_RESTORE.drivers.length} Drivers to ${CARBON_MOTORS_RESTORE.companyName}`}
+              </button>
+
+              {restoreResult && (
+                <p className="mt-3 text-sm">
+                  {restoreResult.failed.length === 0
+                    ? <span className="text-green-700">✅ All {restoreResult.succeeded.length} drivers restored successfully.</span>
+                    : <span className="text-red-700">⚠️ {restoreResult.succeeded.length} succeeded, {restoreResult.failed.length} failed — check console for details.</span>}
+                </p>
+              )}
+            </div>
           )}
         </div>
       </div>
