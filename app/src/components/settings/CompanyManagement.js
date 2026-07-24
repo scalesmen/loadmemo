@@ -37,6 +37,27 @@ const isSuperAdmin = (user) => {
 };
 
 // ============================================================================
+// HELPER: Detect a "different company" rename vs. a minor correction
+// Strips legal suffixes and compares meaningful words — if none overlap at
+// all, this reads as renaming to an unrelated company rather than fixing a
+// typo/rebrand of the same one.
+// ============================================================================
+const significantWords = (name) =>
+  (name || '')
+    .toLowerCase()
+    .replace(/\b(llc|inc|corp|corporation|co|ltd|company)\b/g, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .filter(w => w.length > 1);
+
+const looksLikeADifferentCompany = (oldName, newName) => {
+  const oldWords = new Set(significantWords(oldName));
+  const newWords = new Set(significantWords(newName));
+  if (oldWords.size === 0 || newWords.size === 0) return false;
+  return ![...oldWords].some(w => newWords.has(w));
+};
+
+// ============================================================================
 // ASSIGNMENT MODAL COMPONENT
 // ============================================================================
 const AssignmentModal = ({
@@ -550,6 +571,20 @@ const parentCompanies = canManage
     if (!companyForm.name?.trim()) {
       alert('Company name is required.');
       return;
+    }
+
+    if (isEditingCompany && editingCompanyId) {
+      const existingCompany = companies.find(c => c.id === editingCompanyId);
+      const newName = companyForm.name.trim();
+      if (existingCompany && existingCompany.name !== newName && looksLikeADifferentCompany(existingCompany.name, newName)) {
+        const proceed = window.confirm(
+          `This looks like renaming "${existingCompany.name}" to a completely different company ("${newName}"), not a spelling fix.\n\n` +
+          `Renaming here changes the name shown on past BOLs/invoices too, wherever they use the driver's default company.\n\n` +
+          `If "${newName}" is actually a separate company, click Cancel and create it as a NEW company instead, then reassign drivers/trucks to it.\n\n` +
+          `Continue renaming "${existingCompany.name}" anyway?`
+        );
+        if (!proceed) return;
+      }
     }
 
     setIsProcessing(true);
