@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { db, auth } from '../../firebase';
 import { applyOwnerImpersonation } from '../../utils/impersonation';
+import { logAudit } from '../../utils/auditLog';
 import {
   collection, query, where, onSnapshot, doc, addDoc, updateDoc,
   serverTimestamp, getDocs, writeBatch
@@ -562,6 +563,25 @@ const parentCompanies = canManage
         };
         await updateDoc(companyRef, updateData);
 
+        const oldCompanyForLog = companies.find(c => c.id === editingCompanyId);
+        const changes = {};
+        for (const field of ['name', 'address', 'phone', 'email', 'mcNumber', 'usdot', 'taxId']) {
+          const oldValue = oldCompanyForLog?.[field] || '';
+          const newValue = updateData[field];
+          if (oldValue !== newValue) changes[field] = { oldValue, newValue };
+        }
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: loggedInUser.uid,
+            userEmail: loggedInUser.email,
+            action: 'COMPANY_UPDATED',
+            targetType: 'company',
+            targetId: editingCompanyId,
+            details: { companyName: updateData.name, changes },
+            tenantId
+          });
+        }
+
         // If editing a parent company, update denormalized parentCompanyName on subdivisions, drivers, trucks, loads
         if (companyModalType === 'parent') {
           const oldCompany = companies.find(c => c.id === editingCompanyId);
@@ -605,7 +625,21 @@ const parentCompanies = canManage
           parentCompanyName: parentCompany?.name || null,
         };
 
-        await addDoc(collection(db, 'companies'), newCompanyData);
+        const newCompanyRef = await addDoc(collection(db, 'companies'), newCompanyData);
+        logAudit({
+          userId: loggedInUser.uid,
+          userEmail: loggedInUser.email,
+          action: 'COMPANY_CREATED',
+          targetType: 'company',
+          targetId: newCompanyRef.id,
+          details: {
+            companyName: newCompanyData.name,
+            usdot: newCompanyData.usdot,
+            mcNumber: newCompanyData.mcNumber,
+            taxId: newCompanyData.taxId
+          },
+          tenantId
+        });
         alert(`${companyModalType === 'subdivision' ? 'Subdivision' : 'Company'} created successfully!`);
       }
 
@@ -632,6 +666,15 @@ const parentCompanies = canManage
       await updateDoc(doc(db, 'companies', company.id), {
         active: newActive,
         updatedAt: serverTimestamp(),
+      });
+      logAudit({
+        userId: loggedInUser.uid,
+        userEmail: loggedInUser.email,
+        action: 'COMPANY_STATUS_TOGGLED',
+        targetType: 'company',
+        targetId: company.id,
+        details: { companyName: company.name, newStatus: newActive ? 'Active' : 'Inactive' },
+        tenantId
       });
       alert(`${company.name} ${newActive ? 'activated' : 'deactivated'}.`);
     } catch (error) {

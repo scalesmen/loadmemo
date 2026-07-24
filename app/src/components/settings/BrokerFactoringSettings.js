@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../../firebase';
+import { logAudit } from '../../utils/auditLog';
 import { 
   collection, 
   query, 
@@ -181,13 +182,33 @@ export default function BrokerFactoringSettings({ loggedInUser, tenantId }) {
       if (isEditing && editingRuleId) {
         // Update existing rule
         await updateDoc(doc(db, 'brokerFactoringRules', editingRuleId), ruleData);
+        const oldRule = factoringRules.find(r => r.id === editingRuleId);
+        const changes = {};
+        for (const field of ['factoringPercentage', 'isActive', 'notes']) {
+          const oldValue = oldRule?.[field] ?? '';
+          const newValue = ruleData[field];
+          if (oldValue !== newValue) changes[field] = { oldValue, newValue };
+        }
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: loggedInUser.uid, userEmail: loggedInUser.email, action: 'FACTORING_RULE_UPDATED',
+            targetType: 'brokerFactoringRule', targetId: editingRuleId,
+            details: { brokerName: ruleData.brokerName, changes }, tenantId
+          });
+        }
         setSaveMessage({ type: 'success', text: 'Factoring rule updated successfully!' });
       } else {
         // Create new rule
         ruleData.createdAt = serverTimestamp();
         ruleData.createdBy = loggedInUser.uid;
         ruleData.createdByEmail = loggedInUser.email;
-        await addDoc(collection(db, 'brokerFactoringRules'), ruleData);
+        const newRuleRef = await addDoc(collection(db, 'brokerFactoringRules'), ruleData);
+        logAudit({
+          userId: loggedInUser.uid, userEmail: loggedInUser.email, action: 'FACTORING_RULE_CREATED',
+          targetType: 'brokerFactoringRule', targetId: newRuleRef.id,
+          details: { brokerName: ruleData.brokerName, factoringPercentage: ruleData.factoringPercentage },
+          tenantId
+        });
         setSaveMessage({ type: 'success', text: 'Factoring rule created successfully!' });
       }
 
@@ -218,6 +239,12 @@ export default function BrokerFactoringSettings({ loggedInUser, tenantId }) {
 
     try {
       await deleteDoc(doc(db, 'brokerFactoringRules', rule.id));
+      logAudit({
+        userId: loggedInUser.uid, userEmail: loggedInUser.email, action: 'FACTORING_RULE_DELETED',
+        targetType: 'brokerFactoringRule', targetId: rule.id,
+        details: { brokerName: rule.brokerName, factoringPercentage: rule.factoringPercentage },
+        tenantId
+      });
       alert('Factoring rule deleted successfully.');
     } catch (error) {
       console.error('Error deleting factoring rule:', error);
@@ -234,6 +261,12 @@ export default function BrokerFactoringSettings({ loggedInUser, tenantId }) {
         isActive: !rule.isActive,
         updatedAt: serverTimestamp(),
         updatedBy: loggedInUser.uid
+      });
+      logAudit({
+        userId: loggedInUser.uid, userEmail: loggedInUser.email, action: 'FACTORING_RULE_UPDATED',
+        targetType: 'brokerFactoringRule', targetId: rule.id,
+        details: { brokerName: rule.brokerName, changes: { isActive: { oldValue: rule.isActive, newValue: !rule.isActive } } },
+        tenantId
       });
     } catch (error) {
       console.error('Error toggling rule status:', error);

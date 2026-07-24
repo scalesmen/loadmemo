@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../firebase';
+import { logAudit } from '../utils/auditLog';
 import { 
   collection, 
   query, 
@@ -373,6 +374,18 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
     return 150; // Default for 'Other' category
   };
 
+  // Builds an audit-log {field: {oldValue, newValue}} diff between an existing
+  // record and the fields being saved, skipping anything unchanged.
+  const buildFieldChanges = (oldRecord, newData, fields) => {
+    const changes = {};
+    for (const field of fields) {
+      const oldValue = oldRecord?.[field] ?? '';
+      const newValue = newData?.[field] ?? '';
+      if (oldValue !== newValue) changes[field] = { oldValue, newValue };
+    }
+    return changes;
+  };
+
   // Penalty management functions
   const handleSavePenalty = async () => {
     if (!penaltyForm.violationType || !penaltyForm.category || !loggedInUser?.tenantId) {
@@ -393,12 +406,27 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
           ...penaltyData,
           updatedBy: user.uid
         });
+        const oldPenalty = penalties.find(p => p.id === editingPenalty);
+        const changes = buildFieldChanges(oldPenalty, penaltyData, ['violationType', 'category', 'amount', 'description']);
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: user.uid, userEmail: loggedInUser.email, action: 'PENALTY_UPDATED',
+            targetType: 'penalty', targetId: editingPenalty,
+            details: { violationType: penaltyData.violationType, changes }, tenantId: loggedInUser.tenantId
+          });
+        }
         alert('Penalty updated successfully!');
       } else {
-        await addDoc(collection(db, 'penalties'), {
+        const newRef = await addDoc(collection(db, 'penalties'), {
           ...penaltyData,
           createdAt: serverTimestamp(),
           createdBy: user.uid
+        });
+        logAudit({
+          userId: user.uid, userEmail: loggedInUser.email, action: 'PENALTY_CREATED',
+          targetType: 'penalty', targetId: newRef.id,
+          details: { violationType: penaltyData.violationType, category: penaltyData.category, amount: penaltyData.amount },
+          tenantId: loggedInUser.tenantId
         });
         alert('Penalty created successfully!');
       }
@@ -416,7 +444,14 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
     if (!canManageRates || !window.confirm('Are you sure you want to delete this penalty?')) return;
 
     try {
+      const deletedPenalty = penalties.find(p => p.id === penaltyId);
       await deleteDoc(doc(db, 'penalties', penaltyId));
+      logAudit({
+        userId: user.uid, userEmail: loggedInUser.email, action: 'PENALTY_DELETED',
+        targetType: 'penalty', targetId: penaltyId,
+        details: { violationType: deletedPenalty?.violationType, amount: deletedPenalty?.amount },
+        tenantId: loggedInUser.tenantId
+      });
       alert('Penalty deleted successfully!');
     } catch (error) {
       console.error('Error deleting penalty:', error);
@@ -464,12 +499,27 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
           ...bonusData,
           updatedBy: user.uid
         });
+        const oldBonus = bonuses.find(b => b.id === editingBonus);
+        const changes = buildFieldChanges(oldBonus, bonusData, ['name', 'description', 'amount', 'criteria']);
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: user.uid, userEmail: loggedInUser.email, action: 'BONUS_UPDATED',
+            targetType: 'bonus', targetId: editingBonus,
+            details: { bonusName: bonusData.name, changes }, tenantId: loggedInUser.tenantId
+          });
+        }
         alert('Bonus updated successfully!');
       } else {
-        await addDoc(collection(db, 'bonuses'), {
+        const newRef = await addDoc(collection(db, 'bonuses'), {
           ...bonusData,
           createdAt: serverTimestamp(),
           createdBy: user.uid
+        });
+        logAudit({
+          userId: user.uid, userEmail: loggedInUser.email, action: 'BONUS_CREATED',
+          targetType: 'bonus', targetId: newRef.id,
+          details: { bonusName: bonusData.name, amount: bonusData.amount, criteria: bonusData.criteria },
+          tenantId: loggedInUser.tenantId
         });
         alert('Bonus created successfully!');
       }
@@ -487,7 +537,14 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
     if (!canManageRates || !window.confirm('Are you sure you want to delete this bonus?')) return;
 
     try {
+      const deletedBonus = bonuses.find(b => b.id === bonusId);
       await deleteDoc(doc(db, 'bonuses', bonusId));
+      logAudit({
+        userId: user.uid, userEmail: loggedInUser.email, action: 'BONUS_DELETED',
+        targetType: 'bonus', targetId: bonusId,
+        details: { bonusName: deletedBonus?.name, amount: deletedBonus?.amount },
+        tenantId: loggedInUser.tenantId
+      });
       alert('Bonus deleted successfully!');
     } catch (error) {
       console.error('Error deleting bonus:', error);
@@ -536,12 +593,27 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
           ...violationData,
           updatedBy: user.uid
         });
+        const oldViolation = violations.find(v => v.id === editingViolation);
+        const changes = buildFieldChanges(oldViolation, violationData, ['type', 'severity', 'fine', 'description', 'category', 'location']);
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: user.uid, userEmail: loggedInUser.email, action: 'VIOLATION_UPDATED',
+            targetType: 'violation', targetId: editingViolation,
+            details: { driverName: violationData.driverName, changes }, tenantId: loggedInUser.tenantId
+          });
+        }
         alert('Violation updated successfully!');
       } else {
-        await addDoc(collection(db, 'violations'), {
+        const newRef = await addDoc(collection(db, 'violations'), {
           ...violationData,
           createdAt: serverTimestamp(),
           createdBy: user.uid
+        });
+        logAudit({
+          userId: user.uid, userEmail: loggedInUser.email, action: 'VIOLATION_CREATED',
+          targetType: 'violation', targetId: newRef.id,
+          details: { driverName: violationData.driverName, type: violationData.type, severity: violationData.severity, fine: violationData.fine },
+          tenantId: loggedInUser.tenantId
         });
         alert('Violation recorded successfully!');
       }
@@ -560,7 +632,14 @@ export default function SafetyPage({ companyFilter, loggedInUser }) {
     if (!canDelete || !window.confirm('Are you sure you want to delete this violation?')) return;
 
     try {
+      const deletedViolation = violations.find(v => v.id === violationId);
       await deleteDoc(doc(db, 'violations', violationId));
+      logAudit({
+        userId: user.uid, userEmail: loggedInUser.email, action: 'VIOLATION_DELETED',
+        targetType: 'violation', targetId: violationId,
+        details: { driverName: deletedViolation?.driverName, type: deletedViolation?.type },
+        tenantId: loggedInUser.tenantId
+      });
       alert('Violation deleted successfully!');
     } catch (error) {
       console.error('Error deleting violation:', error);
@@ -673,12 +752,27 @@ After reviewing, return here to manually enter any violations found.`);
           ...inspectionData,
           updatedBy: user.uid
         });
+        const oldInspection = inspections.find(i => i.id === editingInspection);
+        const changes = buildFieldChanges(oldInspection, inspectionData, ['inspectionType', 'level', 'result', 'location', 'inspector', 'violationCount', 'notes']);
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: user.uid, userEmail: loggedInUser.email, action: 'INSPECTION_UPDATED',
+            targetType: 'inspection', targetId: editingInspection,
+            details: { driverName: inspectionData.driverName, changes }, tenantId: loggedInUser.tenantId
+          });
+        }
         alert('Inspection updated successfully!');
       } else {
-        await addDoc(collection(db, 'inspections'), {
+        const newRef = await addDoc(collection(db, 'inspections'), {
           ...inspectionData,
           createdAt: serverTimestamp(),
           createdBy: user.uid
+        });
+        logAudit({
+          userId: user.uid, userEmail: loggedInUser.email, action: 'INSPECTION_CREATED',
+          targetType: 'inspection', targetId: newRef.id,
+          details: { driverName: inspectionData.driverName, inspectionType: inspectionData.inspectionType, result: inspectionData.result },
+          tenantId: loggedInUser.tenantId
         });
         alert('Inspection recorded successfully!');
       }
@@ -697,7 +791,14 @@ After reviewing, return here to manually enter any violations found.`);
     if (!canDelete || !window.confirm('Are you sure you want to delete this inspection?')) return;
 
     try {
+      const deletedInspection = inspections.find(i => i.id === inspectionId);
       await deleteDoc(doc(db, 'inspections', inspectionId));
+      logAudit({
+        userId: user.uid, userEmail: loggedInUser.email, action: 'INSPECTION_DELETED',
+        targetType: 'inspection', targetId: inspectionId,
+        details: { driverName: deletedInspection?.driverName, inspectionType: deletedInspection?.inspectionType },
+        tenantId: loggedInUser.tenantId
+      });
       alert('Inspection deleted successfully!');
     } catch (error) {
       console.error('Error deleting inspection:', error);

@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../../firebase';
 import { applyOwnerImpersonation } from '../../utils/impersonation';
+import { logAudit } from '../../utils/auditLog';
 import { 
   doc, 
   getDoc, 
@@ -162,9 +163,29 @@ export default function PayRulesPage() {
           updatedAt: serverTimestamp(),
           updatedBy: user.uid
         });
+        const oldFee = customFees.find(f => f.id === editingCustom);
+        const changes = {};
+        for (const field of ['name', 'description', 'amount', 'feeType', 'frequency']) {
+          const oldValue = oldFee?.[field] ?? '';
+          const newValue = customFeeForm[field];
+          if (oldValue !== newValue) changes[field] = { oldValue, newValue };
+        }
+        if (Object.keys(changes).length > 0) {
+          logAudit({
+            userId: user.uid, userEmail: userProfile.email, action: 'CUSTOM_FEE_UPDATED',
+            targetType: 'customOwnerOperatorFee', targetId: editingCustom,
+            details: { feeName: customFeeForm.name, changes }, tenantId: userProfile.tenantId
+          });
+        }
       } else {
         // Add new
-        await addDoc(collection(db, 'customOwnerOperatorFees'), feeData);
+        const newFeeRef = await addDoc(collection(db, 'customOwnerOperatorFees'), feeData);
+        logAudit({
+          userId: user.uid, userEmail: userProfile.email, action: 'CUSTOM_FEE_CREATED',
+          targetType: 'customOwnerOperatorFee', targetId: newFeeRef.id,
+          details: { feeName: feeData.name, amount: feeData.amount, feeType: feeData.feeType, frequency: feeData.frequency },
+          tenantId: userProfile.tenantId
+        });
       }
 
       // Reset form
@@ -189,13 +210,20 @@ export default function PayRulesPage() {
     if (!canEdit || !window.confirm('Are you sure you want to delete this custom fee?')) return;
 
     try {
+      const deletedFee = customFees.find(f => f.id === feeId);
       // Soft delete by marking as inactive
       await updateDoc(doc(db, 'customOwnerOperatorFees', feeId), {
         active: false,
         deletedAt: serverTimestamp(),
         deletedBy: user.uid
       });
-      
+      logAudit({
+        userId: user.uid, userEmail: userProfile.email, action: 'CUSTOM_FEE_DELETED',
+        targetType: 'customOwnerOperatorFee', targetId: feeId,
+        details: { feeName: deletedFee?.name, amount: deletedFee?.amount },
+        tenantId: userProfile.tenantId
+      });
+
       alert('Custom fee deleted successfully!');
     } catch (error) {
       console.error('Error deleting custom fee:', error);

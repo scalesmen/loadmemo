@@ -26,6 +26,12 @@ const formatLogDetails = (log, allDrivers = [], allTrucks = [], allDispatchers =
     detailLines.push(<div key="companyId" className="font-semibold">Company: {details.companyName || details.deletedCompanyName}</div>);
   } else if (details.typeName || details.deletedTypeName) {
     detailLines.push(<div key="adjTypeId" className="font-semibold">Adjustment Type: {details.typeName || details.deletedTypeName}</div>);
+  } else if (details.driverName) {
+    detailLines.push(<div key="driverNameHeader" className="font-semibold">Driver: {details.driverName}</div>);
+  } else if (details.unitNumber) {
+    detailLines.push(<div key="truckNumHeader" className="font-semibold">Truck: {details.unitNumber}</div>);
+  } else if (details.brokerName) {
+    detailLines.push(<div key="brokerNameHeader" className="font-semibold">Broker: {details.brokerName}</div>);
   }
 
   // Helper to format date values
@@ -206,21 +212,61 @@ const formatLogDetails = (log, allDrivers = [], allTrucks = [], allDispatchers =
     case "API_KEY_DELETED":
         detailLines.push(<div key="apiKeyPrefixRevoked">Key Prefix: {details.keyPrefix}...</div>);
         break;
-    default:
-      detailLines.push(<div key="defaultDetails" className="mt-1 italic">Details:</div>);
-      for(const key in details){
-        if (key === 'tenantId') continue; // Skip tenant ID as it's already shown
-        let displayValue = details[key];
-        if (key === "driverId") {
-          displayValue = allDrivers.find(d => d.id === displayValue)?.name || displayValue || "N/A";
-        } else if (key === "truckId") {
-          displayValue = allTrucks.find(t => t.id === displayValue)?.unitNumber || displayValue || "N/A";
-        } else if (key === "dispatcherId") {
-          displayValue = allDispatchers.find(d => d.id === displayValue)?.name || displayValue || "N/A";
+    default: {
+      // Generic formatter for the many action types that don't have a bespoke
+      // case above. `details.changes` shows up in two different shapes across
+      // the codebase: a per-field {oldValue, newValue} diff (some load/user/
+      // company actions), or a flat snapshot of the new record (driver/truck/
+      // broker create-update actions). Render each shape appropriately instead
+      // of dumping raw JSON.
+      const noisyKeys = new Set(['id', 'tenantId', 'createdAt', 'updatedAt', 'driverName', 'unitNumber', 'brokerName']);
+
+      const resolveValue = (key, value) => {
+        if (value === null || value === undefined || value === '') return '[empty]';
+        if (key === 'driverId' || key === 'oldDriverId' || key === 'newDriverId') {
+          return allDrivers.find(d => d.id === value)?.name || String(value);
         }
-        detailLines.push(<div key={key} className="ml-2">{`${key}: ${typeof displayValue === 'object' ? JSON.stringify(displayValue) : String(displayValue)}`}</div>);
+        if (key === 'truckId' || key === 'assignedTruckId' || key === 'oldTruckId' || key === 'newTruckId') {
+          return allTrucks.find(t => t.id === value)?.unitNumber || String(value);
+        }
+        if (key === 'dispatcherId') {
+          return allDispatchers.find(d => d.id === value)?.name || String(value);
+        }
+        if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+        if (typeof value === 'object') {
+          if (typeof value.toDate === 'function') return formatDateValue(value.toDate());
+          return JSON.stringify(value);
+        }
+        return String(value);
+      };
+
+      const changes = details.changes;
+      if (changes && typeof changes === 'object' && Object.keys(changes).length > 0) {
+        const isDiffShape = Object.values(changes).every(
+          v => v && typeof v === 'object' && !Array.isArray(v) &&
+               Object.keys(v).every(k => k === 'oldValue' || k === 'newValue')
+        );
+
+        detailLines.push(<div key="changesTitle" className="font-medium mt-1">{isDiffShape ? 'Changes:' : 'Saved data:'}</div>);
+        for (const field in changes) {
+          if (isDiffShape) {
+            const oldVal = resolveValue(field, changes[field].oldValue);
+            const newVal = resolveValue(field, changes[field].newValue);
+            detailLines.push(<div key={field} className="ml-2">{`- ${field}: "${oldVal}" → "${newVal}"`}</div>);
+          } else {
+            if (noisyKeys.has(field)) continue;
+            detailLines.push(<div key={field} className="ml-2">{`- ${field}: ${resolveValue(field, changes[field])}`}</div>);
+          }
+        }
+      }
+
+      // Any other top-level detail fields outside `changes`
+      for (const key in details) {
+        if (key === 'tenantId' || key === 'changes' || noisyKeys.has(key)) continue;
+        detailLines.push(<div key={key} className="ml-2 text-gray-600">{`${key}: ${resolveValue(key, details[key])}`}</div>);
       }
       break;
+    }
   }
 
   if (detailLines.length === 0 && log.action) {
