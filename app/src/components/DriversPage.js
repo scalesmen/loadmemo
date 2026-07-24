@@ -131,9 +131,8 @@ export default function DriversPage() {
     });
 
     const qCompanies = query(
-      collection(db, "companies"), 
+      collection(db, "companies"),
       where("tenantId", "==", loggedInUser.tenantId),
-      where("active", "==", true), 
       orderBy("name", "asc")
     );
     const unsubscribeCompanies = onSnapshot(qCompanies, (snapshot) => {
@@ -680,7 +679,11 @@ export default function DriversPage() {
                   <label htmlFor="driverCompany" className="block text-sm font-medium text-gray-700 mb-1">Company</label>
                   <select name="assignedCompanyId" id="driverCompany" value={newDriverData.assignedCompanyId} onChange={handleDriverInputChange} className="input-class">
                     <option value="">Select Company</option>
-                    {companies.map(comp => <option key={comp.id} value={comp.id}>{comp.name}</option>)}
+                    {companies.map(comp => (
+                      <option key={comp.id} value={comp.id}>
+                        {comp.active === false ? `${comp.name} (Inactive)` : comp.name}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div>
